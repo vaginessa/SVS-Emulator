@@ -31,8 +31,8 @@ namespace SVS_Emulator
     public class CmdMessage
     {
         private readonly UInt32         MSG_ID = 4;
-        private readonly UInt32         MSG_LENGHT = 5;
-        static public readonly byte     FRAME_LENGTH = 17;
+        private readonly UInt32         MSG_LENGHT = 5+4;
+        static public readonly byte     FRAME_LENGTH = 17+4;
         private SVS_CMD                 frame;
 
         static private uint MessageCounter = 0;
@@ -65,6 +65,18 @@ namespace SVS_Emulator
 
             [FieldOffset(16)]
             public byte Parameters;
+
+            [FieldOffset(17)]
+            public byte TurretAngle;
+
+            [FieldOffset(18)]
+            public byte HatchesStatus;
+
+            [FieldOffset(19)]
+            public byte BattleShortStatus;
+
+            [FieldOffset(20)]
+            public byte Dummy;
         }
         #endregion
 

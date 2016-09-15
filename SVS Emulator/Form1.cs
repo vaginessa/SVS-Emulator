@@ -10,7 +10,9 @@ using System.Windows.Forms;
 using System.Net;
 using LBSoft.IndustrialCtrls.Leds;
 using System.Threading;
-
+using tcpServer;
+using System.Net.Sockets;
+using System.IO;
 
 namespace SVS_Emulator
 {
@@ -19,15 +21,50 @@ namespace SVS_Emulator
     {
         #region Private Members
 
-        // PEGASO-TE client
+        private enum EthStatus : byte
+        {
+            ETH_WAIT_ID_MESSAGE_1 = 0x00,
+            ETH_WAIT_ID_MESSAGE_2,
+            ETH_WAIT_ID_MESSAGE_3,
+            ETH_WAIT_ID_MESSAGE_4,
+            ETH_WAIT_LENGTH_1,
+            ETH_WAIT_LENGTH_2,
+            ETH_WAIT_LENGTH_3,
+            ETH_WAIT_LENGTH_4,
+            ETH_WAIT_MESSAGE_COUNTER_1,
+            ETH_WAIT_MESSAGE_COUNTER_2,
+            ETH_WAIT_MESSAGE_COUNTER_3,
+            ETH_WAIT_MESSAGE_COUNTER_4,
+            ETH_WAIT_CRANK_STATUS,
+            ETH_WAIT_BATTERY_STATUS,
+            ETH_WAIT_DOORS_STATUS,
+            ETH_WAIT_HATCH_STATUS,
+            ETH_WAIT_RISERVETTA_DX_HE,
+            ETH_WAIT_RISERVETTA_DX_MP,
+            ETH_WAIT_RISERVETTA_DX_AP,
+            ETH_WAIT_RISERVETTA_SX_HE,
+            ETH_WAIT_RISERVETTA_SX_MP,
+            ETH_WAIT_RISERVETTA_SX_AP,
+            ETH_WAIT_SPARE_1,
+            ETH_WAIT_SPARE_2,
+
+            ETH_WAIT_MAX
+        }
+
         private SVSTcpClient                _tcpClient;
         private Boolean                     _Connected = false;
-        private const UInt16                KA_Timeout = 1000;
+        private Boolean                     _CruscottoConnected = false;
+        private const UInt16                KA_Timeout = 100;
         private System.Windows.Forms.Timer  kaTimer;
         private Mutex                       cmdMutex;
-       
+        private TcpServer                   _tcpServer;
+        private EthStatus                   status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+        private byte[]                      svsPayload;
+        private int cruscottoTxEnable = 0;
 
         #endregion
+
+        public delegate void invokeDelegate();
 
         public Form1()
         {
@@ -37,6 +74,14 @@ namespace SVS_Emulator
             _tcpClient.OnConnected += OnConnected;
             _tcpClient.OnDisconnected += OnDisconnected;
             _tcpClient.OnRxData += OnRxData;
+
+            _tcpServer = new TcpServer();
+            _tcpServer.Port = 2100;
+            _tcpServer.Open();
+            _tcpServer.OnDataAvailable += _tcpServer_OnDataAvailable;
+            _tcpServer.OnConnect += _tcpServer_OnConnect;
+            _tcpServer.OnError += _tcpServer_OnError;
+            svsPayload = new byte[11]; 
 
             ConnectLed.State = LBLed.LedState.Off;
             ConnectLed.Show();
@@ -52,6 +97,255 @@ namespace SVS_Emulator
             textTurretAngle.Text = "0";
             comboHatches.SelectedIndex = 0;
             comboBattleShort.SelectedIndex = 0;
+        }
+
+        private void _tcpServer_OnError(TcpServer server, Exception e)
+        {
+            _CruscottoConnected = false; 
+        }
+
+        private void _tcpServer_OnConnect(TcpServerConnection connection)
+        {
+            _CruscottoConnected = true;
+        }
+
+        private void _tcpServer_OnDataAvailable(TcpServerConnection connection)
+        {
+            byte[] data = readStream(connection.Socket);
+
+            if (data != null)
+            {
+                //string dataStr = Encoding.ASCII.GetString(data);
+                try
+                {
+                    invokeDelegate del = () =>
+                    {
+                        ParseSvsData(data);
+                    };
+                    Invoke(del);
+                    data = null;
+                }
+                catch { }
+            }
+        }
+
+        private void ParseSvsData(byte[] data)
+        {
+            int length = data.Length;
+            int index = 0;
+
+            while (length>0)
+            {
+             
+                switch (status)
+                {
+                    case EthStatus.ETH_WAIT_ID_MESSAGE_1:
+                        if(data[index] == 0x07)
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_2;
+                        }
+                        else
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+                        }
+                    break;
+
+                    case EthStatus.ETH_WAIT_ID_MESSAGE_2:
+                        if (data[index] == 0x00)
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_3;
+                        }
+                        else
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+                        }
+                    break;
+
+                    case EthStatus.ETH_WAIT_ID_MESSAGE_3:
+                        if (data[index] == 0x00)
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_4;
+                        }
+                        else
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+                        }
+                    break;
+
+                    case EthStatus.ETH_WAIT_ID_MESSAGE_4:
+                        if (data[index] == 0x00)
+                        {
+                            status = EthStatus.ETH_WAIT_LENGTH_1;
+                        }
+                        else
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+                        }
+                    break;
+
+                    case EthStatus.ETH_WAIT_LENGTH_1:
+                    {
+                        if (data[index] == 0x0C)
+                        {
+                            status = EthStatus.ETH_WAIT_LENGTH_2;
+                        }
+                        else
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+                        }
+
+                    }
+                    break;
+
+                    case EthStatus.ETH_WAIT_LENGTH_2:
+                    {
+                        if (data[index] == 0x00)
+                        {
+                            status = EthStatus.ETH_WAIT_LENGTH_3;
+                        }
+                        else
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+                        }
+
+                    }
+                    break;
+
+                    case EthStatus.ETH_WAIT_LENGTH_3:
+                    {
+                        if (data[index] == 0x00)
+                        {
+                            status = EthStatus.ETH_WAIT_LENGTH_4;
+                        }
+                        else
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+                        }
+
+                    }
+                    break;
+
+                    case EthStatus.ETH_WAIT_LENGTH_4:
+                    {
+                        if (data[index] == 0x00)
+                        {
+                            status = EthStatus.ETH_WAIT_MESSAGE_COUNTER_1;
+                        }
+                        else
+                        {
+                            status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+                        }
+
+                    }
+                    break;
+
+                    case EthStatus.ETH_WAIT_MESSAGE_COUNTER_1:
+                    {
+                        svsPayload[0] = data[index];
+                        status = EthStatus.ETH_WAIT_MESSAGE_COUNTER_2;
+                    }
+                    break;
+
+                    case EthStatus.ETH_WAIT_MESSAGE_COUNTER_2:
+                    {
+                        status = EthStatus.ETH_WAIT_MESSAGE_COUNTER_3;
+                    }
+                    break;
+
+                    case EthStatus.ETH_WAIT_MESSAGE_COUNTER_3:
+                    {
+                        status = EthStatus.ETH_WAIT_MESSAGE_COUNTER_4;
+                    }
+                    break;
+
+                    case EthStatus.ETH_WAIT_MESSAGE_COUNTER_4:
+                    {
+                        status = EthStatus.ETH_WAIT_CRANK_STATUS;
+                    }
+                    break;
+
+                    case EthStatus.ETH_WAIT_CRANK_STATUS:
+                        svsPayload[1] = data[index];
+                        status = EthStatus.ETH_WAIT_BATTERY_STATUS;
+                    break;
+
+                    case EthStatus.ETH_WAIT_BATTERY_STATUS:
+                        svsPayload[2] = data[index];
+                        status = EthStatus.ETH_WAIT_DOORS_STATUS;
+                    break;
+
+                    case EthStatus.ETH_WAIT_DOORS_STATUS:
+                        svsPayload[3] = data[index];
+                        status = EthStatus.ETH_WAIT_HATCH_STATUS;
+                    break;
+
+                    case EthStatus.ETH_WAIT_HATCH_STATUS:
+                        svsPayload[4] = data[index];
+                        status = EthStatus.ETH_WAIT_RISERVETTA_DX_HE;
+                    break;
+
+                    case EthStatus.ETH_WAIT_RISERVETTA_DX_HE:
+                        svsPayload[5] = data[index];
+                        status = EthStatus.ETH_WAIT_RISERVETTA_DX_MP;
+                    break;
+
+                    case EthStatus.ETH_WAIT_RISERVETTA_DX_MP:
+                        svsPayload[6] = data[index];
+                        status = EthStatus.ETH_WAIT_RISERVETTA_DX_AP;
+                    break;
+
+                    case EthStatus.ETH_WAIT_RISERVETTA_DX_AP:
+                        svsPayload[7] = data[index];
+                        status = EthStatus.ETH_WAIT_RISERVETTA_SX_HE;
+                    break;
+
+                    case EthStatus.ETH_WAIT_RISERVETTA_SX_HE:
+                        svsPayload[8] = data[index];
+                        status = EthStatus.ETH_WAIT_RISERVETTA_SX_MP;
+                    break;
+
+                    case EthStatus.ETH_WAIT_RISERVETTA_SX_MP:
+                        svsPayload[9] = data[index];
+                        status = EthStatus.ETH_WAIT_RISERVETTA_SX_AP;
+                    break;
+
+                    case EthStatus.ETH_WAIT_RISERVETTA_SX_AP:
+                        svsPayload[10] = data[index];
+                        status = EthStatus.ETH_WAIT_SPARE_1;
+                    break;
+
+                    case EthStatus.ETH_WAIT_SPARE_1:
+                        status = EthStatus.ETH_WAIT_SPARE_2;
+                    break;
+
+                    case EthStatus.ETH_WAIT_SPARE_2:
+                        status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+                        // TODO: update form controls
+                        message_counter.Text = svsPayload[0].ToString();
+                        CrankStatus.Text = svsPayload[1].ToString();
+                        BatteryStatus.Text = svsPayload[2].ToString();
+                        DoorsStatus.Text = svsPayload[3].ToString();
+                        HatchStatus.Text = svsPayload[4].ToString();
+                        DX_HE.Text = svsPayload[5].ToString();
+                        DX_MP.Text = svsPayload[6].ToString();
+                        DX_AP.Text = svsPayload[7].ToString();
+                        SX_HE.Text = svsPayload[8].ToString();
+                        SX_MP.Text = svsPayload[9].ToString();
+                        SX_AP.Text = svsPayload[10].ToString();
+
+                        //buttonSendType6_Click(null, null);
+
+                        cruscottoTxEnable++;
+                        break;
+
+                    default:
+                        status = EthStatus.ETH_WAIT_ID_MESSAGE_1;
+                    break;
+                }
+
+                index++;
+                length--;
+            };
         }
 
         private delegate void TextUpdateDelegate(object sender, string args);
@@ -77,6 +371,11 @@ namespace SVS_Emulator
             kaTimer.Interval = KA_Timeout;
             kaTimer.Tick += kaTimer_Tick;
             kaTimer.Start();
+        }
+
+        private void OnConnectedCruscotto(object sender, EventArgs e)
+        {
+            
         }
 
         private void OnRxData(object sender, EventArgs e)
@@ -344,7 +643,7 @@ namespace SVS_Emulator
 
         private void buttonSendType6_Click(object sender, EventArgs e)
         {
-            if (_Connected == true)
+            if (_CruscottoConnected == true)
             {
                 byte[] message = new byte[16];
                 message[0] = 0x6;
@@ -368,6 +667,80 @@ namespace SVS_Emulator
                 message[14] = (byte)comboBattleShort.SelectedIndex;
                 message[15] = 0x0;
        
+                //if (cmdMutex.WaitOne(500))
+                //{
+                    //_tcpClient.SendMessage(message);
+                    //_tcpServer.Send();
+                    foreach(TcpServerConnection client in _tcpServer.Connections)
+                    {
+                        NetworkStream stream = client.Socket.GetStream();
+                        stream.Write(message, 0, 16);
+                    }
+                    string sentText = ByteArrayToHexStringViaBitConverter(message);
+                    textLog.AppendText("TX:     " + sentText + "\r\n");
+                 //   cmdMutex.ReleaseMutex();
+                //}
+            } 
+        }
+
+        protected byte[] readStream(TcpClient client)
+        {
+            NetworkStream stream = client.GetStream();
+            if (stream.DataAvailable)
+            {
+                byte[] data = new byte[client.Available];
+
+                int bytesRead = 0;
+                try
+                {
+                    bytesRead = stream.Read(data, 0, data.Length);
+                }
+                catch (IOException)
+                {
+                }
+
+                if (bytesRead < data.Length)
+                {
+                    byte[] lastData = data;
+                    data = new byte[bytesRead];
+                    Array.ConstrainedCopy(lastData, 0, data, 0, bytesRead);
+                }
+                return data;
+            }
+            return null;
+        }
+
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            _tcpServer.Close();
+        }
+
+        private void button2_Click(object sender, EventArgs e)
+        {
+            if (_CruscottoConnected == true)
+            {
+                byte[] message = new byte[16];
+                message[0] = 0x6;
+                message[1] = 0x0;
+                message[2] = 0x0;
+                message[3] = 0x0;
+
+                message[4] = 0x4;
+                message[5] = 0x0;
+                message[6] = 0x0;
+                message[7] = 0x0;
+
+                message[8] = 0x0;
+                message[9] = 0x0;
+                message[10] = 0x0;
+                message[11] = 0x0;
+
+                byte.TryParse(textTurretAngle.Text, System.Globalization.NumberStyles.HexNumber, null, out message[12]);
+
+                message[13] = (byte)comboHatches.SelectedIndex;
+                message[14] = (byte)comboBattleShort.SelectedIndex;
+                message[15] = 0x0;
+
                 if (cmdMutex.WaitOne(500))
                 {
                     _tcpClient.SendMessage(message);
@@ -375,8 +748,7 @@ namespace SVS_Emulator
                     textLog.AppendText("TX:     " + sentText + "\r\n");
                     cmdMutex.ReleaseMutex();
                 }
-            } 
+            }
         }
-
     }
 }
